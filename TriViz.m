@@ -3,11 +3,13 @@ classdef TriViz < handle
     %
     %  Displays a polar axes centred on the beacon triangle with:
     %    - Labeled beacon markers (fixed)
-    %    - Raw corner scatter  (4 corners per robot ping, blue squares)
-    %    - Trilateralized robot position (green triangle + label)
+    %    - Trilateralized robot position (heading-oriented triangle)
     %    - Robot movement trail
     %
-    %  Usage:  app = TriViz();
+    %  Requires TriVizStreamer, RawDataEventData, and TrilatEventData on the
+    %  MATLAB path alongside this file.
+    %
+    %  Usage: app = TriViz();
 
     %% Properties
     properties (Access = private)
@@ -26,32 +28,42 @@ classdef TriViz < handle
 
         % Geometry (metres, Cartesian, relative to physical origin)
         BeaconPositions double  % [3x2]
-        AxesCenter double  % [1x2] centroid of beacons is the polar origin
+        AxesCenter      double  % [1x2] centroid of beacons is the polar origin
+        MaxBeaconRho    double  % scalar – farthest beacon rho; lower bound for auto-scale
 
         % Connection & streaming state
-        Connected logical
-        DataTimer timer
+        Connected        logical
+        Streamer         TriVizStreamer
+        StreamListeners  % [1xN] event.listener – released on disconnect
 
         % Robot trail buffer
         TrailTheta double  % [1xN] radians
-        TrailRho double  % [1xN] metres
+        TrailRho   double  % [1xN] metres
         MaxTrailLen double
-
-        % TODO Replace with real data reader
-        SimPos double  % [1x2] current simulated position (metres)
-        SimVel double  % [1x2] current simulated velocity (m/s)
     end
 
     %% Public Methods - App Lifecycle
     methods (Access = public)
 
-        function app = TriViz()
-            app.Connected = false;
-            app.TrailTheta = zeros(1, 0);
-            app.TrailRho = zeros(1, 0);
-            app.MaxTrailLen = 300;
-            app.SimPos = [0.0, 0.0];
-            app.SimVel = [0.3, 0.2];
+        function app = TriViz(inputsCsv, outputCsv)
+            %TRIVIZ  Create the visualizer and load the data streams.
+            %
+            %   app = TriViz()
+            %   app = TriViz(inputsCsv, outputCsv)
+            %
+            %   Defaults to 'data/inputs.csv' and 'data/output.csv' relative
+            %   to the working directory.
+
+            if nargin < 1, inputsCsv = 'data/inputs.csv'; end
+            if nargin < 2, outputCsv  = 'data/output.csv';  end
+
+            app.Connected       = false;
+            app.TrailTheta      = zeros(1, 0);
+            app.TrailRho        = zeros(1, 0);
+            app.MaxTrailLen     = 300;
+            app.StreamListeners = [];
+
+            app.Streamer = TriVizStreamer(inputsCsv, outputCsv);
 
             createComponents(app);
             initGeometry(app);
@@ -59,9 +71,8 @@ classdef TriViz < handle
         end
 
         function delete(app)
-            if ~isempty(app.DataTimer) && isvalid(app.DataTimer)
-                stop(app.DataTimer);
-                delete(app.DataTimer);
+            if ~isempty(app.Streamer) && isvalid(app.Streamer)
+                delete(app.Streamer);
             end
             if isvalid(app.UIFigure)
                 delete(app.UIFigure);
@@ -112,12 +123,12 @@ classdef TriViz < handle
             % Polar axes
             app.PolarAxes = polaraxes(app.UIFigure, ...
                 'Units', 'pixels', ...
-                'Position', [50 20 W-80 H-90]);
+                'Position', [50 20 W-90 H-100]);
 
             pa = app.PolarAxes;
             pa.Color = [0.10 0.10 0.13];
             pa.GridColor = [0.30 0.30 0.35];
-            pa.GridAlpha = 0.45;
+            pa.GridAlpha = 0.1;
             pa.ThetaColor = [0.70 0.70 0.75];
             pa.RColor = [0.70 0.70 0.75];
             pa.FontSize = 9;
@@ -128,14 +139,14 @@ classdef TriViz < handle
         % Geometry
 
         function initGeometry(app)
-            % Three beacons at the vertices of an equilateral triangle.
-            % Beacon 1 is placed at the top (angle = 90 deg), the others
-            % are spaced 120 deg apart.  Radius = 5 m - adjust to match
-            % your physical setup.
-            R = 5;
-            ang = [90, 210, 330];   % degrees
-            app.BeaconPositions = R * [cosd(ang)', sind(ang)'];
-            app.AxesCenter = mean(app.BeaconPositions, 1);  % (0,0) by symmetry
+            %INITGEOMETRY  Solve for beacon positions from the loaded CSV data.
+            %
+            %  Calls calibrateBeacons() on the already-loaded Streamer so that
+            %  beacon layout and the polar axes centre reflect the actual physical
+            %  setup rather than a hardcoded placeholder.
+
+            app.BeaconPositions = calibrateBeacons(app.Streamer);  % [3x2]
+            app.AxesCenter      = mean(app.BeaconPositions, 1);    % [1x2]
         end
 
         function [th, r] = toPolar(app, xy)
@@ -152,37 +163,50 @@ classdef TriViz < handle
             ax = app.PolarAxes;
             hold(ax, 'on');
 
-            beaconR = norm(app.BeaconPositions(1,:) - app.AxesCenter);
-            ax.RLim = [0, beaconR * 1.45];
-            ax.RTick = 1:1:ceil(beaconR * 1.45);
+            % beaconColor = [0.945 0.486 0.639]; % pink
+            beaconColor = [0.055 0.514 0.361];
+            robotColor  = [0.055 0.514 0.361]; % green
 
-            beaconColor = [0.945 0.486 0.639];   % pink
-            robotColor = [0.055 0.514 0.361];   % green
-
-            % Beacons
+            % Compute polar coords first so max(bR) drives the initial axis 
+            % limits (calibrated beacons may not be equidistant).
             [bTh, bR] = toPolar(app, app.BeaconPositions);
-            app.BeaconScatter = polarscatter(ax, bTh, bR, 230, beaconColor, 'o', 'LineWidth', 2);
+            app.MaxBeaconRho = max(bR);
+
+            % Initial limits: 2× the farthest beacon, no robot position yet.
+            setAxisLimits(app, app.MaxBeaconRho * 2);
+
+            app.BeaconScatter = polarscatter( ...
+                ax, bTh, bR, 230, ...
+                beaconColor, 'o', ...
+                'LineWidth', 2 ...
+                );
+
+            beaconLabelOffset = 0;
 
             app.BeaconLabels = gobjects(1, 3);
             for i = 1:3
-                app.BeaconLabels(i) = text(ax, bTh(i), bR(i) * 1.16, ...
-                    sprintf('Beacon %d', i), ...
-                    'Color',               beaconColor, ...
-                    'FontWeight',          'bold', ...
-                    'FontSize',            10, ...
+                bX = bR(i) * cos(bTh(i));
+                bY = bR(i) * sin(bTh(i)) + beaconLabelOffset;
+                bLabelR = sqrt(bX^2 + bY^2);
+                bLabelTh = atan2(bY, bX);
+                app.BeaconLabels(i) = text(ax, bLabelTh, bLabelR, ...
+                    sprintf('%d', i), ...
+                    'Color', beaconColor, ...
+                    'FontWeight', 'bold', ...
+                    'FontSize', 10, ...
                     'HorizontalAlignment', 'center');
             end
 
             % Robot trail (empty until connected)
             app.TrailLine = polarplot(ax, NaN, NaN, ...
-                'Color',     [0.50 0.50 0.55], ...
+                'Color', [0.50 0.50 0.55], ...
                 'LineWidth', 0.9);
 
             % Trilateralized robot position (heading-oriented triangle)
             % Drawn as a closed 3-vertex polarplot; vertices are recomputed
             % each frame in updateDisplay via robotTriVerts().
             app.RobotMarker = polarplot(ax, NaN(4,1), NaN(4,1), ...
-                'Color',     robotColor, ...
+                'Color', robotColor, ...
                 'LineWidth', 2.5);
             
             % Removed label text because it overlapped. If in final 
@@ -192,15 +216,6 @@ classdef TriViz < handle
                 'FontSize', 10, ...
                 'HorizontalAlignment', 'center', ...
                 'Visible', 'off');
-
-            % Legend
-            legend(ax, ...
-                [app.BeaconScatter, app.RobotMarker], ...
-                {'Beacons', 'Robot (trilat.)'}, ...
-                'TextColor', [0.80 0.80 0.85], ...
-                'Color', [0.11 0.11 0.14], ...
-                'EdgeColor', [0.28 0.28 0.32], ...
-                'FontSize', 9);
         end
 
         % Connection Handling
@@ -215,62 +230,37 @@ classdef TriViz < handle
 
         function connectStream(app)
             app.Connected = true;
-            app.ConnectButton.Text = 'Disconnect';
+            app.ConnectButton.Text        = 'Disconnect';
             app.ConnectButton.BackgroundColor = [0.65 0.18 0.18];
-            app.StatusLabel.Text = 'Status: Connecting...';
+            app.StatusLabel.Text      = 'Status: Connecting...';
             app.StatusLabel.FontColor = [0.95 0.75 0.30];
 
-            % TODO: Establish data connection
-            app.DataTimer = timer( ...
-                'ExecutionMode', 'fixedRate', ...
-                'Period', 0.10, ...
-                'TimerFcn', @(~,~) simulatedUpdate(app));
-            start(app.DataTimer);
+            % Subscribe to trilaterated position + heading.
+            % The RawData event is also available here if needed in future.
+            app.StreamListeners = addlistener(app.Streamer, ...
+                'TrilateralizedData', ...
+                @(~, e) updateDisplay(app, e.Position, e.Heading));
 
-            app.StatusLabel.Text = 'Status: Streaming';
+            app.Streamer.connect();
+
+            app.StatusLabel.Text      = 'Status: Streaming';
             app.StatusLabel.FontColor = [0.40 0.90 0.60];
         end
 
         function disconnectStream(app)
-            if ~isempty(app.DataTimer) && isvalid(app.DataTimer)
-                stop(app.DataTimer);
-                delete(app.DataTimer);
-                app.DataTimer = timer.empty;
+            app.Streamer.disconnect();
+
+            % Release event listeners so no stale callbacks fire.
+            if ~isempty(app.StreamListeners)
+                delete(app.StreamListeners);
+                app.StreamListeners = [];
             end
+
             app.Connected = false;
-            app.ConnectButton.Text = 'Connect';
+            app.ConnectButton.Text        = 'Connect';
             app.ConnectButton.BackgroundColor = [0.055 0.514 0.361];
-            app.StatusLabel.Text = 'Status: Disconnected';
+            app.StatusLabel.Text      = 'Status: Disconnected';
             app.StatusLabel.FontColor = [0.55 0.55 0.60];
-        end
-
-        % Data Update
-
-        function simulatedUpdate(app)
-            % Placeholder: performs a smooth random walk within the beacon arena.
-            %
-            % TODO: Replace with real data ingestion
-
-            speed      = norm(app.SimVel);
-            heading    = atan2(app.SimVel(2), app.SimVel(1)) + 0.15 * randn();
-            speed      = min(max(speed + 0.05 * randn(), 0.1), 1.5);
-            app.SimVel = speed * [cos(heading), sin(heading)];
-            app.SimPos = app.SimPos + app.SimVel * 0.10;
-
-            % Bounce off arena boundaries: reverse the relevant velocity
-            % component so the heading immediately reflects the new direction.
-            for dim = 1:2
-                if app.SimPos(dim) > 3.5
-                    app.SimPos(dim) = 3.5;
-                    app.SimVel(dim) = -abs(app.SimVel(dim));
-                elseif app.SimPos(dim) < -3.5
-                    app.SimPos(dim) = -3.5;
-                    app.SimVel(dim) =  abs(app.SimVel(dim));
-                end
-            end
-
-            heading = atan2(app.SimVel(2), app.SimVel(1));
-            updateDisplay(app, app.SimPos, heading);
         end
 
         function updateDisplay(app, robotXY, heading)
@@ -279,24 +269,29 @@ classdef TriViz < handle
             %   robotXY  [1x2] trilateralized robot position (metres, Cartesian)
             %   heading  scalar heading in radians (atan2: 0 = east, CCW)
 
-            % Trilateralized robot (heading-oriented triangle)
+            % Trilateralized robot
             [rTh, rR] = toPolar(app, robotXY);
             [vTh, vR] = robotTriVerts(app, robotXY, heading);
             app.RobotMarker.ThetaData = vTh;
             app.RobotMarker.RData     = vR;
             app.RobotLabel.Visible    = 'on';
-            app.RobotLabel.Position   = [rTh, rR + 0.45, 0];
+            app.RobotLabel.Position   = [rTh, rR * 1.06, 0];
 
             % Trail
             app.TrailTheta(end+1) = rTh;
-            app.TrailRho(end+1)   = rR;
+            app.TrailRho(end+1) = rR;
             if numel(app.TrailTheta) > app.MaxTrailLen
-                keep           = numel(app.TrailTheta) - app.MaxTrailLen + 1;
+                keep = numel(app.TrailTheta) - app.MaxTrailLen + 1;
                 app.TrailTheta = app.TrailTheta(keep:end);
-                app.TrailRho   = app.TrailRho(keep:end);
+                app.TrailRho = app.TrailRho(keep:end);
             end
+
+            % Auto-scale: default headroom is 2× the farthest beacon.
+            % Expand beyond that if any point in the trail exceeds it, with 10% padding,
+            % so the full path history is always visible.
+            setAxisLimits(app, max(app.MaxBeaconRho * 2, max(app.TrailRho) * 1.10));
             app.TrailLine.ThetaData = app.TrailTheta;
-            app.TrailLine.RData     = app.TrailRho;
+            app.TrailLine.RData = app.TrailRho;
 
             % Status bar with compass bearing and distance from system centre
             bearing = mod(90 - rad2deg(rTh), 360);
@@ -305,17 +300,41 @@ classdef TriViz < handle
                 bearing, rR);
         end
 
+        function setAxisLimits(app, newRMax)
+            %SETAXISLIMITS  Set RLim to newRMax; update ticks only when the
+            %  rounded bin changes to avoid label flicker.  Callers are
+            %  responsible for applying any padding before passing newRMax.
+
+            ax = app.PolarAxes;
+
+            if abs(newRMax - ax.RLim(2)) < newRMax * 1e-6
+                return   % negligible change – skip the redraw
+            end
+            ax.RLim = [0, newRMax];
+
+            % Recompute nice-number ticks (1-2-5-10 series).
+            rawStep = newRMax / 5;
+            mag = 10 ^ floor(log10(max(rawStep, 1e-9)));
+            niceMult = [1, 2, 5, 10];
+            tickStep = mag * niceMult(find(mag * niceMult >= rawStep, 1));
+            newTick = tickStep : tickStep : ceil(newRMax / tickStep) * tickStep;
+            if ~isequal(ax.RTick, newTick)
+                ax.RTick = newTick;
+            end
+        end
+
         function [vTh, vR] = robotTriVerts(app, centerXY, heading)
             % Polar coords of a closed equilateral triangle centred on
             % centerXY, with its tip pointing in the heading direction.
             % The four points form a closed polygon (first == last).
-            s = 0.28; % circumradius (metres)
+            % Scale marker to ~5.6% of beacon distance. 
+            s = norm(app.BeaconPositions(1,:) - app.AxesCenter) * 0.056;
             va = heading + [0; 2*pi/3; 4*pi/3; 0]; % tip at heading, CCW
             vx = centerXY(1) + s * cos(va);
             vy = centerXY(2) + s * sin(va);
             [vTh, vR] = toPolar(app, [vx, vy]);
         end
 
-    end % private methods
+    end
 
-end % classdef
+end
