@@ -7,16 +7,15 @@ classdef TriVizStreamer < handle
     %  looping the recording from the beginning.
     %
     %  Events
-    %  ------
     %    RawData            – fired on each CSV playback step.
     %                         Payload: RawDataEventData  (.Distances [4x3])
     %
     %    TrilateralizedData – fired on every step, including the homing walk.
     %                         Payload: TrilatEventData   (.Position [1x2],
-    %                                                     .Heading  scalar)
+    %                                                     .Heading  scalar,
+    %                                                     .BeaconDists [1x3])
     %
     %  Usage
-    %  -----
     %    s = TriVizStreamer('data/inputs.csv', 'data/output.csv');
     %    addlistener(s, 'TrilateralizedData', @(~,e) disp(e.Position));
     %    s.connect();
@@ -25,61 +24,57 @@ classdef TriVizStreamer < handle
     %    s.connect();      % resume – picks up where it left off
     %    delete(s);        % clean up timer on teardown
 
-    %% Events
     events
-        RawData               % one raw distance block per CSV time-step
-        TrilateralizedData    % one (x,y) + heading per step (CSV + homing)
+        RawData % one raw distance block per CSV time-step
+        TrilateralizedData % one (x,y) + heading + beacon dists per step
     end
 
-    %% Properties
     properties (Access = private)
-        % ── Loaded data ───────────────────────────────────────────────────
-        RawSteps        % {Nx1} cell – each entry is a [4x3] distance matrix
-        TrilatXY        % [Nx2] double – (x,y) positions from output CSV
-        NumSteps        % scalar integer
-        TypicalStep     % scalar – median step-to-step distance (for homing speed)
+        % Loaded data
+        RawSteps % {Nx1} cell – each entry is a [4x3] distance matrix
+        TrilatXY % [Nx2] double – (x,y) positions from output CSV
+        NumSteps % scalar integer
+        TypicalStep % scalar – median step-to-step distance (for homing speed)
 
-        % ── Playback state ────────────────────────────────────────────────
-        CurrentStep     % integer index into RawSteps / TrilatXY
-        PrevPos         % [1x2] position from the previous tick (heading calc)
-        State           % 'disconnected' | 'streaming' | 'homing'
-        ResumeState     % state to restore when connect() is called
+        % Playback state
+        CurrentStep % integer index into RawSteps / TrilatXY
+        PrevPos % [1x2] position from the previous tick (heading calc)
+        State % 'disconnected' | 'streaming' | 'homing'
+        ResumeState % state to restore when connect() is called
 
-        % ── Homing walk state ─────────────────────────────────────────────
-        HomePos         % [1x2] – target (first row of output CSV)
-        HomingPos       % [1x2] – current synthetic position during homing
-        HomingVel       % [1x2] – current velocity during homing
-        MaxHomeDist     % scalar – distance from data-end to home (alpha scale)
+        % Homing walk state
+        HomePos % [1x2] target (first row of output CSV)
+        HomingPos % [1x2] current synthetic position during homing
+        HomingVel % [1x2] current velocity during homing
+        MaxHomeDist % scalar – distance from data-end to home (alpha scale)
 
-        % ── Timer ─────────────────────────────────────────────────────────
-        StreamTimer     timer
-        StreamRate      % Hz (ticks per second)
+        % Timer
+        StreamTimer timer
+        StreamRate % Hz (ticks per second)
     end
 
-    %% Public API
     methods (Access = public)
 
-        function obj = TriVizStreamer(inputsPath, outputsPath, streamRate)
+        function obj = TriVizStreamer(streamRate, inputsPath, outputsPath)
             %TRIVIZSTREAMER  Load CSV data and prepare for streaming.
             %
             %   obj = TriVizStreamer(inputsPath, outputsPath)
             %   obj = TriVizStreamer(inputsPath, outputsPath, streamRate)
             %
-            %   streamRate – ticks per second, default 10 Hz.
+            %   streamRate – ticks per second, default 10 Hz 
+            if nargin < 1, streamRate = 10; end
+            if nargin < 2, inputsPath = 'data/inputs.csv'; end
+            if nargin < 3, outputsPath = 'data/output.csv'; end
 
-            if nargin < 3
-                streamRate = 10;
-            end
-
-            obj.StreamRate  = streamRate;
-            obj.State       = 'disconnected';
+            obj.StreamRate = streamRate;
+            obj.State = 'disconnected';
             obj.ResumeState = 'streaming';
             obj.CurrentStep = 1;
-            obj.PrevPos     = [];
+            obj.PrevPos = [];
 
             loadData(obj, inputsPath, outputsPath);
 
-            obj.HomePos     = obj.TrilatXY(1, :);
+            obj.HomePos = obj.TrilatXY(1, :);
             obj.MaxHomeDist = norm(obj.TrilatXY(end, :) - obj.HomePos);
             if obj.MaxHomeDist < 1e-6
                 obj.MaxHomeDist = 1;
@@ -87,11 +82,11 @@ classdef TriVizStreamer < handle
 
             % Derive a typical step distance from the data so the homing walk
             % moves at the same pace as the recorded trajectory.
-            deltas          = diff(obj.TrilatXY, 1, 1);
-            stepDists       = sqrt(sum(deltas .^ 2, 2));
+            deltas = diff(obj.TrilatXY, 1, 1);
+            stepDists = sqrt(sum(deltas .^ 2, 2));
             obj.TypicalStep = median(stepDists(stepDists > 1e-6));
             if isnan(obj.TypicalStep) || obj.TypicalStep < 1e-6
-                obj.TypicalStep = 1;   % safe fallback
+                obj.TypicalStep = 1; % safe fallback
             end
         end
 
@@ -102,16 +97,16 @@ classdef TriVizStreamer < handle
             %  it resumes homing; if paused mid-playback it resumes playback.
 
             if ~strcmp(obj.State, 'disconnected')
-                return   % already running
+                return % already running
             end
 
             obj.State = obj.ResumeState;
 
             if isempty(obj.StreamTimer) || ~isvalid(obj.StreamTimer)
                 obj.StreamTimer = timer( ...
-                    'ExecutionMode', 'fixedRate',        ...
-                    'Period',        1 / obj.StreamRate, ...
-                    'TimerFcn',      @(~,~) tick(obj));
+                    'ExecutionMode', 'fixedRate', ...
+                    'Period', 1 / obj.StreamRate, ...
+                    'TimerFcn', @(~,~) tick(obj));
             end
             start(obj.StreamTimer);
         end
@@ -119,8 +114,8 @@ classdef TriVizStreamer < handle
         function disconnect(obj)
             %DISCONNECT  Pause streaming; all state is preserved for resume.
 
-            obj.ResumeState = obj.State;   % remember where we are
-            obj.State       = 'disconnected';
+            obj.ResumeState = obj.State; % remember where we are
+            obj.State = 'disconnected';
 
             if ~isempty(obj.StreamTimer) && isvalid(obj.StreamTimer)
                 stop(obj.StreamTimer);
@@ -180,19 +175,18 @@ classdef TriVizStreamer < handle
             % RHS for all 3 beacons at once → [(N-1)×3]
             % b_col_j = d_ij^2 - d_1j^2 - rx_i^2 + rx_1^2 - ry_i^2 + ry_1^2
             scalarCol = -rx(2:N).^2 + rx(1)^2 ...
-                        -ry(2:N).^2 + ry(1)^2;           % [(N-1)×1], same for all j
-            Bmat = D(2:N, :).^2 - D(1, :).^2 + scalarCol; % [(N-1)×3]  (row broadcast)
+                        -ry(2:N).^2 + ry(1)^2; % [(N-1)×1], same for all j
+            Bmat = D(2:N, :).^2 - D(1, :).^2 + scalarCol; % [(N-1)×3] (row broadcast)
 
-            beaconPositions = (A \ Bmat)';   % [3×2]
+            beaconPositions = (A \ Bmat)'; % [3×2]
         end
 
     end
 
-    %% Private – data loading
     methods (Access = private)
 
         function loadData(obj, inputsPath, outputsPath)
-            % ── output CSV ────────────────────────────────────────────────
+            % output CSV
             if ~isfile(outputsPath)
                 error('TriVizStreamer: output file not found: %s', outputsPath);
             end
@@ -208,7 +202,7 @@ classdef TriVizStreamer < handle
             obj.TrilatXY = [outT{:, xi}, outT{:, yi}];
             obj.NumSteps = size(obj.TrilatXY, 1);
 
-            % ── inputs CSV ────────────────────────────────────────────────
+            % inputs CSV
             if ~isfile(inputsPath)
                 error('TriVizStreamer: inputs file not found: %s', inputsPath);
             end
@@ -242,7 +236,7 @@ classdef TriVizStreamer < handle
             steps = {};
             block = [];
 
-            for i = 2 : numel(rawLines)          % skip header (row 1)
+            for i = 2 : numel(rawLines) % skip header (row 1)
                 line = strtrim(rawLines{i});
 
                 % Separator row: empty or all commas/spaces
@@ -269,7 +263,6 @@ classdef TriVizStreamer < handle
 
     end
 
-    %% Private – streaming logic
     methods (Access = private)
 
         function tick(obj)
@@ -284,20 +277,21 @@ classdef TriVizStreamer < handle
             end
         end
 
-        % ── CSV playback ──────────────────────────────────────────────────
-
         function streamStep(obj)
-            i  = obj.CurrentStep;
+            i = obj.CurrentStep;
             xy = obj.TrilatXY(i, :);
+
+            % Mean distance from each beacon across all 4 corners.
+            meanDists = mean(obj.RawSteps{i}, 1); % [1x3]
 
             % Fire raw event (distance matrix for this time-step).
             notify(obj, 'RawData', RawDataEventData(obj.RawSteps{i}));
 
-            % Fire trilaterated event (position + heading).
+            % Fire trilaterated event (position + heading + beacon distances).
             notify(obj, 'TrilateralizedData', ...
-                TrilatEventData(xy, headingFromDelta(obj, xy)));
+                TrilatEventData(xy, headingFromDelta(obj, xy), meanDists));
 
-            obj.PrevPos     = xy;
+            obj.PrevPos = xy;
             obj.CurrentStep = obj.CurrentStep + 1;
 
             if obj.CurrentStep > obj.NumSteps
@@ -311,28 +305,25 @@ classdef TriVizStreamer < handle
             if isempty(obj.PrevPos) || norm(currentPos - obj.PrevPos) < 1e-9
                 hdg = 0;
             else
-                d   = currentPos - obj.PrevPos;
+                d = currentPos - obj.PrevPos;
                 hdg = atan2(d(2), d(1));
             end
         end
 
-        % ── Homing walk ───────────────────────────────────────────────────
-
         function initHoming(obj)
             %INITHOMING  Transition into the biased random-walk phase.
 
-            obj.State       = 'homing';
-            obj.HomingPos   = obj.TrilatXY(end, :);
+            obj.State = 'homing';
+            obj.HomingPos = obj.TrilatXY(end, :);
             obj.MaxHomeDist = norm(obj.HomingPos - obj.HomePos);
             if obj.MaxHomeDist < 1e-6
                 obj.MaxHomeDist = 1;
             end
 
             % Seed velocity pointing toward home at typical playback speed.
-            toHome        = obj.HomePos - obj.HomingPos;
-            obj.HomingVel = obj.TypicalStep ...
-                * toHome / max(norm(toHome), 1e-9);
-            obj.PrevPos   = obj.HomingPos;
+            toHome = obj.HomePos - obj.HomingPos;
+            obj.HomingVel = obj.TypicalStep * toHome / max(norm(toHome), 1e-9);
+            obj.PrevPos = obj.HomingPos;
         end
 
         function homingStep(obj)
@@ -342,37 +333,37 @@ classdef TriVizStreamer < handle
             %  position; randn() adds ~±8° of noise per step (1-sigma).
 
             toHome = obj.HomePos - obj.HomingPos;
-            dist   = norm(toHome);
+            dist = norm(toHome);
 
             % Arrived: switch back to playback from the first row.
             if dist <= obj.TypicalStep * 2
-                obj.State       = 'streaming';
+                obj.State = 'streaming';
                 obj.CurrentStep = 1;
-                obj.PrevPos     = obj.HomePos;
+                obj.PrevPos = obj.HomePos;
                 return
             end
 
             % Head straight toward home, perturbed by small angular noise.
-            baseAngle     = atan2(toHome(2), toHome(1));
-            noisyAngle    = baseAngle + 0.14 * randn();   % ~±8° 1-sigma
+            baseAngle = atan2(toHome(2), toHome(1));
+            noisyAngle = baseAngle + 0.14 * randn(); % ~±8° 1-sigma
             obj.HomingVel = obj.TypicalStep * [cos(noisyAngle), sin(noisyAngle)];
             obj.HomingPos = obj.HomingPos + obj.HomingVel;
 
+            % BeaconDists are NaN during homing (no real sensor data).
             notify(obj, 'TrilateralizedData', ...
-                TrilatEventData(obj.HomingPos, noisyAngle));
+                TrilatEventData(obj.HomingPos, noisyAngle, NaN(1, 3)));
 
             obj.PrevPos = obj.HomingPos;
         end
 
     end
 
-    %% Private – static helpers
     methods (Static, Access = private)
 
         function bp = fallbackGeometry()
             %FALLBACKGEOMETRY  Equilateral triangle R=5 used when calibration fails.
             ang = [90, 210, 330];
-            bp  = 5 * [cosd(ang)', sind(ang)'];
+            bp = 5 * [cosd(ang)', sind(ang)'];
         end
 
     end

@@ -1,2 +1,6 @@
 
 /.claude/
+
+/build_details.mat
+
+*.html
