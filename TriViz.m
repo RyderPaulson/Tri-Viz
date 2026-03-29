@@ -100,7 +100,7 @@ classdef TriViz < handle
             app.UIFigure = uifigure( ...
                 'Name', 'TriViz - Trilateralization Visualizer', ...
                 'Position', [80 80 W H], ...
-                'Color', [0.12 0.12 0.15], ...
+                'Color', [0.95 0.95 0.97], ...
                 'Visible', 'off');
 
             % Stop the data timer cleanly when the window is closed.
@@ -109,7 +109,7 @@ classdef TriViz < handle
             % Top toolbar
             toolbar = uipanel(app.UIFigure, ...
                 'Position', [0 H-54 W 54], ...
-                'BackgroundColor', [0.09 0.09 0.12], ...
+                'BackgroundColor', [0.87 0.87 0.91], ...
                 'BorderType', 'none');
 
             app.ConnectButton = uibutton(toolbar, ...
@@ -124,9 +124,9 @@ classdef TriViz < handle
             app.StatusLabel = uilabel(toolbar, ...
                 'Text', 'Status: Disconnected', ...
                 'Position', [148 12 W-164 30], ...
-                'FontColor', [0.55 0.55 0.60], ...
+                'FontColor', [0.35 0.35 0.40], ...
                 'FontSize', 12, ...
-                'BackgroundColor', [0.09 0.09 0.12]);
+                'BackgroundColor', [0.87 0.87 0.91]);
 
             % Cartesian axes
             app.CartAxes = uiaxes(app.UIFigure, ...
@@ -134,18 +134,18 @@ classdef TriViz < handle
                 'Position', [60 30 W-80 H-90]);
 
             ax = app.CartAxes;
-            ax.Color = [0.10 0.10 0.13];
-            ax.XColor = [0.70 0.70 0.75];
-            ax.YColor = [0.70 0.70 0.75];
-            ax.GridColor = [0.30 0.30 0.35];
-            ax.GridAlpha = 0.25;
-            ax.MinorGridColor = [0.20 0.20 0.25];
+            ax.Color = [1.00 1.00 1.00];
+            ax.XColor = [0.20 0.20 0.25];
+            ax.YColor = [0.20 0.20 0.25];
+            ax.GridColor = [0.70 0.70 0.75];
+            ax.GridAlpha = 0.40;
+            ax.MinorGridColor = [0.80 0.80 0.85];
             ax.FontSize = 9;
             ax.DataAspectRatio = [1 1 1]; % equal x/y scale
             ax.Box = 'on';
             grid(ax, 'on');
-            xlabel(ax, 'X (m)', 'Color', [0.70 0.70 0.75], 'FontSize', 9);
-            ylabel(ax, 'Y (m)', 'Color', [0.70 0.70 0.75], 'FontSize', 9);
+            xlabel(ax, 'X (m)', 'Color', [0.20 0.20 0.25], 'FontSize', 9);
+            ylabel(ax, 'Y (m)', 'Color', [0.20 0.20 0.25], 'FontSize', 9);
 
             app.UIFigure.Visible = 'on';
         end
@@ -174,7 +174,7 @@ classdef TriViz < handle
 
             beaconColor = [0.055 0.514 0.361];
             robotColor = [0.055 0.514 0.361];
-            trailColor = [0.50 0.50 0.55];
+            trailColor = [0.60 0.60 0.65];
 
             % Max distance from centre drives initial axis limits.
             dists = sqrt(sum((app.BeaconPositions - app.AxesCenter).^2, 2));
@@ -235,7 +235,7 @@ classdef TriViz < handle
             app.ConnectButton.Text = 'Disconnect';
             app.ConnectButton.BackgroundColor = [0.65 0.18 0.18];
             app.StatusLabel.Text = 'Status: Connecting...';
-            app.StatusLabel.FontColor = [0.95 0.75 0.30];
+            app.StatusLabel.FontColor = [0.75 0.45 0.00];
 
             % Subscribe to trilaterated position + heading + beacon distances.
             app.StreamListeners = addlistener(app.Streamer, ...
@@ -245,7 +245,7 @@ classdef TriViz < handle
             app.Streamer.connect();
 
             app.StatusLabel.Text = 'Status: Streaming';
-            app.StatusLabel.FontColor = [0.40 0.90 0.60];
+            app.StatusLabel.FontColor = [0.02 0.50 0.25];
         end
 
         function disconnectStream(app)
@@ -261,7 +261,7 @@ classdef TriViz < handle
             app.ConnectButton.Text = 'Connect';
             app.ConnectButton.BackgroundColor = [0.055 0.514 0.361];
             app.StatusLabel.Text = 'Status: Disconnected';
-            app.StatusLabel.FontColor = [0.55 0.55 0.60];
+            app.StatusLabel.FontColor = [0.35 0.35 0.40];
         end
 
         % Display Update
@@ -319,7 +319,7 @@ classdef TriViz < handle
             if ~app.DrawRange, return; end 
 
             ax = app.CartAxes;
-            rangeColor = [0.50 0.50 0.55];
+            rangeColor = [0.60 0.60 0.65];
             bX = app.BeaconPositions(:, 1);
             bY = app.BeaconPositions(:, 2);
             theta = linspace(0, 2*pi, 100);
