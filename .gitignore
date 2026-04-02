@@ -1,6 +1,3 @@
-
-/.claude/
-
-/build_details.mat
-
+.claude/
+build_details.mat
 *.html

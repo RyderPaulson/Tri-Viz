@@ -1,59 +1,48 @@
 classdef TriViz < handle
     %TRIVIZ  Trilateralization Visualizer
     %
-    %  Displays a Cartesian axes centred on the beacon triangle with:
-    %    - Labeled beacon markers (fixed)
-    %    - Range circles showing live beacon-to-robot distances
-    %    - Trilateralized robot position (heading-oriented triangle)
-    %    - Robot movement trail
+    %   Visualizes the tri-laterized position of some robot using 3 beacons.
+    %   Shows both the output location and has the option to visualizae the
+    %   range circles around each beacon showing how the algorithm actually
+    %   works.
     %
-    %  The top ribbon shows the robot's polar angle and distance from the
-    %  beacon centroid (the natural polar reference for trilateralization).
-    %
-    %  Requires TriVizStreamer, RawDataEventData, and TrilatEventData on the
-    %  MATLAB path alongside this file.
-    %
-    %  Usage: app = TriViz();
+    % Usage: app = TriViz();
 
     properties (Access = private)
-        % UI Components
+        % UI
         UIFigure matlab.ui.Figure
         CartAxes matlab.ui.control.UIAxes
         ConnectButton matlab.ui.control.Button
         StatusLabel matlab.ui.control.Label
 
         % Plot handles
-        BeaconScatter % scatter handle – all 3 beacon positions
-        DrawRange % Boolean of whether to draw range circles
-        BeaconRanges % {1x3} cell of plot handles – range circles around each beacon
-        BeaconLabels % [1x3] text handles
-        RobotMarker % plot handle – heading-oriented closed triangle
-        RobotLabel % text handle (reserved; currently hidden)
-        TrailLine % plot handle – robot movement history
+        BeaconScatter
+        DrawRange
+        BeaconRanges
+        BeaconLabels
+        RobotMarker
+        RobotLabel
+        TrailLine
 
-        % Geometry (metres, Cartesian, relative to physical origin)
-        BeaconPositions double % [3x2]
-        AxesCenter double % [1x2] centroid of beacons (polar reference)
-        MaxBeaconDist double % scalar – farthest beacon dist from centre
+        % Geometry
+        BeaconPositions double
+        AxesCenter double
+        MaxBeaconDist double
 
-        % Connection & streaming state
+        % Streaming
         Connected logical
         Streamer TriVizStreamer
-        StreamListeners % [1xN] event.listener – released on disconnect
+        StreamListeners
 
-        % Robot trail buffer (Cartesian)
-        TrailX double % [1xN] metres
-        TrailY double % [1xN] metres
+        % Trail buffer
+        TrailX double
+        TrailY double
         MaxTrailLen double
     end
 
     methods (Access = public)
 
         function app = TriViz(options)
-            %TRIVIZ  Create the visualizer and load the data streams.
-            %
-            %   Defaults to 'data/inputs.csv' and 'data/output.csv' relative
-            %   to the working directory.
             arguments
                 options.DrawRange = "Off"
             end
@@ -92,8 +81,6 @@ classdef TriViz < handle
 
     methods (Access = private)
 
-        % Component Creation
-
         function createComponents(app)
             W = 840; H = 720;
 
@@ -103,10 +90,9 @@ classdef TriViz < handle
                 'Color', [0.95 0.95 0.97], ...
                 'Visible', 'off');
 
-            % Stop the data timer cleanly when the window is closed.
             app.UIFigure.CloseRequestFcn = @(~,~) delete(app);
 
-            % Top toolbar
+            % Toolbar
             toolbar = uipanel(app.UIFigure, ...
                 'Position', [0 H-54 W 54], ...
                 'BackgroundColor', [0.87 0.87 0.91], ...
@@ -128,7 +114,7 @@ classdef TriViz < handle
                 'FontSize', 12, ...
                 'BackgroundColor', [0.87 0.87 0.91]);
 
-            % Cartesian axes
+            % Axes
             app.CartAxes = uiaxes(app.UIFigure, ...
                 'Units', 'pixels', ...
                 'Position', [60 30 W-80 H-90]);
@@ -141,7 +127,7 @@ classdef TriViz < handle
             ax.GridAlpha = 0.40;
             ax.MinorGridColor = [0.80 0.80 0.85];
             ax.FontSize = 9;
-            ax.DataAspectRatio = [1 1 1]; % equal x/y scale
+            ax.DataAspectRatio = [1 1 1];
             ax.Box = 'on';
             grid(ax, 'on');
             xlabel(ax, 'X (m)', 'Color', [0.20 0.20 0.25], 'FontSize', 9);
@@ -150,23 +136,16 @@ classdef TriViz < handle
             app.UIFigure.Visible = 'on';
         end
 
-        % Geometry
-
         function initGeometry(app)
-            %INITGEOMETRY  Derive beacon positions from loaded CSV data via least-squares.
-            app.BeaconPositions = calibrateBeacons(app.Streamer); % [3x2]
-            app.AxesCenter = mean(app.BeaconPositions, 1); % [1x2]
+            app.BeaconPositions = calibrateBeacons(app.Streamer);
+            app.AxesCenter = mean(app.BeaconPositions, 1);
         end
 
         function [th, r] = toPolar(app, xy)
-            % Convert absolute Cartesian position to polar
-            % (theta rad, rho m) relative to the beacon centroid.
             dx = xy(:,1) - app.AxesCenter(1);
             dy = xy(:,2) - app.AxesCenter(2);
             [th, r] = cart2pol(dx, dy);
         end
-
-        % Static Plot Elements
 
         function drawStaticElements(app)
             ax = app.CartAxes;
@@ -176,11 +155,8 @@ classdef TriViz < handle
             robotColor = [0.055 0.514 0.361];
             trailColor = [0.60 0.60 0.65];
 
-            % Max distance from centre drives initial axis limits.
             dists = sqrt(sum((app.BeaconPositions - app.AxesCenter).^2, 2));
             app.MaxBeaconDist = max(dists);
-
-            % Initial view: 2× the farthest beacon distance.
             setAxisLimits(app, app.MaxBeaconDist * 2);
 
             bX = app.BeaconPositions(:, 1);
@@ -199,15 +175,12 @@ classdef TriViz < handle
                     'HorizontalAlignment', 'center');
             end
 
-            % Beacon range circles (initially hidden with NaN distances).
             drawRangeCircles(app, NaN(1, 3));
 
-            % Robot trail
             app.TrailLine = plot(ax, NaN, NaN, ...
                 'Color', trailColor, ...
                 'LineWidth', 0.9);
 
-            % Marker for robot.
             app.RobotMarker = plot(ax, NaN(4,1), NaN(4,1), ...
                 'Color', robotColor, ...
                 'LineWidth', 2.5);
@@ -220,7 +193,7 @@ classdef TriViz < handle
                 'Visible', 'off');
         end
 
-        % Connection Handling
+        % Connection
 
         function onConnectToggle(app)
             if ~app.Connected
@@ -237,7 +210,6 @@ classdef TriViz < handle
             app.StatusLabel.Text = 'Status: Connecting...';
             app.StatusLabel.FontColor = [0.75 0.45 0.00];
 
-            % Subscribe to trilaterated position + heading + beacon distances.
             app.StreamListeners = addlistener(app.Streamer, ...
                 'TrilateralizedData', ...
                 @(~, e) updateDisplay(app, e.Position, e.Heading, e.BeaconDists));
@@ -251,7 +223,6 @@ classdef TriViz < handle
         function disconnectStream(app)
             app.Streamer.disconnect();
 
-            % Release event listeners so no stale callbacks fire.
             if ~isempty(app.StreamListeners)
                 delete(app.StreamListeners);
                 app.StreamListeners = [];
@@ -264,21 +235,14 @@ classdef TriViz < handle
             app.StatusLabel.FontColor = [0.35 0.35 0.40];
         end
 
-        % Display Update
+        % Display
 
         function updateDisplay(app, robotXY, heading, beaconDists)
-            % Update all dynamic plot elements.
-            %
-            %   robotXY     [1x2] trilateralized robot position (metres, Cartesian)
-            %   heading     scalar heading in radians (atan2: 0 = east, CCW)
-            %   beaconDists [1x3] mean distance from each beacon; NaN during homing
-
-            % Robot triangle marker (Cartesian vertices).
             [vX, vY] = robotTriVerts(app, robotXY, heading);
             app.RobotMarker.XData = vX;
             app.RobotMarker.YData = vY;
 
-            % Trail buffer.
+            % Trail
             app.TrailX(end+1) = robotXY(1);
             app.TrailY(end+1) = robotXY(2);
             if numel(app.TrailX) > app.MaxTrailLen
@@ -289,22 +253,16 @@ classdef TriViz < handle
             app.TrailLine.XData = app.TrailX;
             app.TrailLine.YData = app.TrailY;
 
-            % Range circles: use geometric distances from calibrated beacon
-            % positions to the trilateralized robot center. Raw sensor
-            % distances (mean of 4 corners) are systematically offset from
-            % the center, so the geometric values guarantee the circles
-            % intersect exactly at robotXY.
-            geomDists = sqrt(sum((app.BeaconPositions - robotXY).^2, 2))'; % [1x3]
+            % Range circles
+            geomDists = sqrt(sum((app.BeaconPositions - robotXY).^2, 2))';
             drawRangeCircles(app, geomDists);
 
-            % Auto-scale: default is 2× the farthest beacon distance from centre.
-            % Expand only when any trail point exceeds that, with 10% headroom,
-            % so the full path history is always visible.
+            % Auto-scale
             trailDists = sqrt((app.TrailX - app.AxesCenter(1)).^2 + ...
                               (app.TrailY - app.AxesCenter(2)).^2);
             setAxisLimits(app, max(app.MaxBeaconDist * 2, max(trailDists) * 1.10));
 
-            % Status bar: polar angle (deg, CCW from east) and distance from centre.
+            % Status bar
             [rTh, rR] = toPolar(app, robotXY);
             app.StatusLabel.Text = sprintf( ...
                 'Status: Streaming  |  Angle: %+06.1f\x00B0  |  Distance: %.3f m', ...
@@ -312,11 +270,7 @@ classdef TriViz < handle
         end
 
         function drawRangeCircles(app, dists)
-            % Draw or update dashed range circles around each beacon.
-            %
-            %   dists  [1x3] distance from each beacon to the robot.
-            %          Pass NaN(1,3) to hide all circles (e.g. on init or homing).
-            if ~app.DrawRange, return; end 
+            if ~app.DrawRange, return; end
 
             ax = app.CartAxes;
             rangeColor = [0.60 0.60 0.65];
@@ -347,14 +301,7 @@ classdef TriViz < handle
             end
         end
 
-        % Axis Limits
-
         function setAxisLimits(app, halfSpan)
-            %SETAXISLIMITS  Set equal XLim / YLim centred on the beacon centroid.
-            %
-            %   halfSpan – half-width and half-height of the square view (metres).
-            %   Callers are responsible for any padding before passing halfSpan.
-
             ax = app.CartAxes;
             cx = app.AxesCenter(1);
             cy = app.AxesCenter(2);
@@ -362,7 +309,6 @@ classdef TriViz < handle
             newXLim = [cx - halfSpan, cx + halfSpan];
             newYLim = [cy - halfSpan, cy + halfSpan];
 
-            % Skip negligible changes to avoid unnecessary redraws.
             if max(abs(ax.XLim - newXLim)) < halfSpan * 1e-4 && ...
                max(abs(ax.YLim - newYLim)) < halfSpan * 1e-4
                 return
@@ -372,13 +318,7 @@ classdef TriViz < handle
             ax.YLim = newYLim;
         end
 
-        % Robot Marker Geometry
-
         function [vX, vY] = robotTriVerts(app, centerXY, heading)
-            % Cartesian vertices of a closed equilateral triangle centred on
-            % centerXY, with its tip pointing in the heading direction.
-            % The four points form a closed polygon (first == last).
-            % Scale marker to ~5.6% of beacon distance.
             s = norm(app.BeaconPositions(1,:) - app.AxesCenter) * 0.056;
             va = heading + [0; 2*pi/3; 4*pi/3; 0];
             vX = centerXY(1) + s * cos(va);
